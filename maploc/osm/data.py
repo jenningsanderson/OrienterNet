@@ -5,6 +5,9 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Set, Tuple
 
 import numpy as np
+import geopandas as gpd
+from shapely import get_exterior_ring, get_interior_ring, get_num_interior_rings, get_parts
+from shapely.ops import transform
 
 from .parser import (
     Patterns,
@@ -17,6 +20,7 @@ from .parser import (
     parse_way,
 )
 from .reader import OSMData, OSMNode, OSMRelation, OSMWay
+from ..utils.geo import Projection
 
 logger = logging.getLogger(__name__)
 
@@ -112,6 +116,19 @@ class MapNode(MapElement):
             xy=node.xy,
         )
 
+    @classmethod
+    def from_geojson(cls, feature, projection, label, group):
+        _coords = feature.get("geometry").get("coordinates")
+        lat_lon = [_coords[1], _coords[0]]
+
+        return cls(
+            feature.get("properties").get("id"),
+            label,
+            group,
+            feature.get("properties"),
+            xy=projection.project(lat_lon),
+        )
+
 
 @dataclass
 class MapLine(MapElement):
@@ -126,6 +143,14 @@ class MapLine(MapElement):
             group,
             way.tags,
             xy=xy,
+        )
+        xy = [[_[1], _[0]] for _ in feature.get("geometry").get("coordinates")]
+        return cls(
+            feature.get("properties").get("id"),
+            label,
+            group,
+            feature.get("properties"),
+            xy=projection.project(xy),
         )
 
 
@@ -225,5 +250,66 @@ class MapData:
             assert rel.id_ not in self.areas  # not sure if there can be collision
             if area is not None:
                 self.areas[rel.id_] = area
+
+        return self
+
+    @classmethod
+    def from_geodataframe(cls, gdf: gpd.GeoDataFrame, projection: Projection):
+        """
+        Expects a GeoDataFrame with the following columns: 
+        - geometry: shapely geometry
+        - label: string label
+        - group: string group
+
+        It also expects the projection to be passed in and then used to convert
+        from shapely geometry to the proper numpy array object.
+        """
+        self = cls()
+        idx = 0
+
+        # Areas
+        for row_idx, row in gdf[
+            gdf.geometry.apply(lambda g: g.geom_type).isin(["MultiPolygon", "Polygon"])
+        ].iterrows():
+            outers = []
+            inners = []
+            for p in get_parts(row.geometry):
+                idx += 1
+                exterior_ring = get_exterior_ring(p)
+                yx = transform(lambda x, y: (y, x), exterior_ring).coords
+                outers.append(projection.project(yx))
+
+                # TODO: Haven't tested this anywhere where interior rings exit: 
+                for interior_ring_idx in range(0,get_num_interior_rings(p)):
+                    interior_ring = get_interior_ring(p, interior_ring_idx)
+                    yx = transform(lambda x, y: (y, x), interior_ring).coords
+                    inners.append(projection.project(yx))
+                
+                self.areas[idx] = MapArea(row_idx, row.label, row.group, {}, outers, inners)
+
+        # Lines
+        for row_idx, row in gdf[
+            gdf.geometry.apply(lambda g: g.geom_type).isin(
+                ["LineString", "MultiLineString"]
+            )
+        ].iterrows():
+            for p in get_parts(row.geometry):
+                idx += 1
+                yx = transform(lambda x, y: (y, x), p).coords
+
+                self.lines[idx] = MapLine(
+                    row_idx, row.label, row.group, {}, projection.project(yx)
+                )
+
+        # "Nodes" (Points)
+        for row_idx, row in gdf[
+            gdf.geometry.apply(lambda g: g.geom_type).isin(["MultiPoint", "Point"])
+        ].iterrows():
+            for p in get_parts(row.geometry):
+                idx += 1
+                yx = transform(lambda x, y: (y, x), p).coords
+                self.nodes[idx] = MapNode(
+                    row_idx, row.label, row.group, {}, projection.project(yx)
+                )
 
         return self
