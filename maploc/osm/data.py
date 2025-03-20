@@ -4,13 +4,20 @@ import logging
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Set, Tuple
 
-import numpy as np
 import geopandas as gpd
-from shapely import get_exterior_ring, get_interior_ring, get_num_interior_rings, get_parts
+
+import numpy as np
+from shapely import (
+    get_exterior_ring,
+    get_interior_ring,
+    get_num_interior_rings,
+    get_parts,
+)
 from shapely.ops import transform
 
+from ..utils.geo import Projection
+
 from .parser import (
-    Patterns,
     filter_area,
     filter_node,
     filter_way,
@@ -18,9 +25,9 @@ from .parser import (
     parse_area,
     parse_node,
     parse_way,
+    Patterns,
 )
 from .reader import OSMData, OSMNode, OSMRelation, OSMWay
-from ..utils.geo import Projection
 
 logger = logging.getLogger(__name__)
 
@@ -256,7 +263,7 @@ class MapData:
     @classmethod
     def from_geodataframe(cls, gdf: gpd.GeoDataFrame, projection: Projection):
         """
-        Expects a GeoDataFrame with the following columns: 
+        Expects a GeoDataFrame with the following columns:
         - geometry: shapely geometry
         - label: string label
         - group: string group
@@ -279,13 +286,15 @@ class MapData:
                 yx = transform(lambda x, y: (y, x), exterior_ring).coords
                 outers.append(projection.project(yx))
 
-                # TODO: Haven't tested this anywhere where interior rings exit: 
-                for interior_ring_idx in range(0,get_num_interior_rings(p)):
+                # TODO: Haven't tested this anywhere where interior rings exit:
+                for interior_ring_idx in range(0, get_num_interior_rings(p)):
                     interior_ring = get_interior_ring(p, interior_ring_idx)
                     yx = transform(lambda x, y: (y, x), interior_ring).coords
                     inners.append(projection.project(yx))
-                
-                self.areas[idx] = MapArea(row_idx, row.label, row.group, {}, outers, inners)
+
+                self.areas[idx] = MapArea(
+                    row_idx, row.label, row.group, {}, outers, inners
+                )
 
         # Lines
         for row_idx, row in gdf[
@@ -309,7 +318,7 @@ class MapData:
                 idx += 1
                 yx = transform(lambda x, y: (y, x), p).coords
                 self.nodes[idx] = MapNode(
-                    row_idx, row.label, row.group, {}, projection.project(yx)
+                    row_idx, row.label, row.group, {}, projection.project(yx)[0]
                 )
 
         return self
